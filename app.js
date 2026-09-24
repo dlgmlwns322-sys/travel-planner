@@ -1273,45 +1273,74 @@ async function enrichHotelPhoto() {
 
 // 구글 장소 사진 주소는 시간이 지나면 만료된다(저장해 두고 재사용하면 안 됨).
 // 사진이 안 열리면 그 장소의 사진을 새로 받아 저장해서, 공유 중인 모두에게 고쳐진 사진이 보이게 한다.
+// 한 화면을 여는 동안 장소마다 최대 한 번만 다시 받는다(새 주소도 실패해도 반복 호출하지 않음).
 const brokenPhotoUris = new Set();
+const repairedPlaceIds = new Set();
 let photoRepairTimer = null;
+let photoRepairRunning = false;
+let photoRepairWaits = 0;
 document.addEventListener("error", (event) => {
   const img = event.target;
   if (!(img instanceof HTMLImageElement)) return;
   const uri = img.getAttribute("src") || "";
   if (!uri.includes("places.googleapis.com") || brokenPhotoUris.has(uri)) return;
   brokenPhotoUris.add(uri);
-  clearTimeout(photoRepairTimer);
-  photoRepairTimer = setTimeout(repairBrokenPhotos, 400);
+  schedulePhotoRepair(400);
 }, true);
 
+function schedulePhotoRepair(delay) {
+  clearTimeout(photoRepairTimer);
+  photoRepairTimer = setTimeout(repairBrokenPhotos, delay);
+}
+
 async function repairBrokenPhotos() {
-  if (!mapsReady) { photoRepairTimer = setTimeout(repairBrokenPhotos, 1500); return; }
-  const places = [...state.wishlist, ...state.days.flatMap((day) => day.stops)];
-  const targets = places.filter((place) => place.placeId && place.photoUri && brokenPhotoUris.has(place.photoUri));
-  if (!targets.length) return;
-  let Place;
-  try {
-    ({ Place } = await google.maps.importLibrary("places"));
-  } catch (error) {
-    console.info("사진 복구용 지도 라이브러리 로드 실패", error?.message || "");
+  if (photoRepairRunning) { schedulePhotoRepair(1000); return; }
+  if (!mapsReady) {
+    // 지도가 끝내 안 뜨면(키 문제 등) 30초 뒤 포기한다.
+    if (++photoRepairWaits <= 20) schedulePhotoRepair(1500);
     return;
   }
-  const fresh = new Map();
-  for (const placeId of new Set(targets.map((place) => place.placeId))) {
-    try {
-      const place = new Place({ id: placeId });
-      await place.fetchFields({ fields: ["photos"] });
-      fresh.set(placeId, place.photos?.[0]?.getURI?.({ maxWidth: 320, maxHeight: 220 }) || "");
-    } catch (error) {
-      console.info("사진 다시 받기 실패", error?.message || "");
-    }
-  }
-  let changed = false;
+  const places = [...state.wishlist, ...state.days.flatMap((day) => day.stops)];
+  const targets = places.filter((place) => place.placeId && place.photoUri &&
+    brokenPhotoUris.has(place.photoUri) && !repairedPlaceIds.has(place.placeId));
+  if (!targets.length) return;
+  photoRepairRunning = true;
+  // 요청을 시작할 때의 깨진 주소(장소별). 받는 사이 주소가 바뀌었으면 교체하지 않기 위해 기억한다.
+  const startUris = new Map();
   targets.forEach((place) => {
-    if (fresh.has(place.placeId) && place.photoUri !== fresh.get(place.placeId)) { place.photoUri = fresh.get(place.placeId); changed = true; }
+    if (!startUris.has(place.placeId)) startUris.set(place.placeId, new Set());
+    startUris.get(place.placeId).add(place.photoUri);
   });
-  if (changed) { saveState(); render(); }
+  // 구글 응답이 끝나지 않아도 10초 뒤에는 포기해서 실행 표시가 계속 켜져 있지 않게 한다.
+  const withTimeout = (promise) => Promise.race([promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("시간 초과")), 10000))]);
+  try {
+    const { Place } = await withTimeout(google.maps.importLibrary("places"));
+    const fresh = new Map();
+    for (const placeId of startUris.keys()) {
+      repairedPlaceIds.add(placeId);
+      try {
+        const place = new Place({ id: placeId });
+        await withTimeout(place.fetchFields({ fields: ["photos"] }));
+        fresh.set(placeId, place.photos?.[0]?.getURI?.({ maxWidth: 320, maxHeight: 220 }) || "");
+      } catch (error) {
+        console.info("사진 다시 받기 실패", error?.message || "");
+      }
+    }
+    // 받는 사이 다른 사람이 사진을 바꿨으면 덮어쓰지 않는다(시작할 때의 깨진 주소 그대로일 때만 교체).
+    let changed = false;
+    const latest = [...state.wishlist, ...state.days.flatMap((day) => day.stops)];
+    latest.forEach((place) => {
+      if (!fresh.has(place.placeId) || !startUris.get(place.placeId)?.has(place.photoUri)) return;
+      const next = fresh.get(place.placeId);
+      if (place.photoUri !== next) { place.photoUri = next; changed = true; }
+    });
+    if (changed) { saveState(); render(); }
+  } catch (error) {
+    console.info("사진 복구용 지도 라이브러리 로드 실패", error?.message || "");
+  } finally {
+    photoRepairRunning = false;
+  }
 }
 
 async function insertWishlistAt(wishlistIndex, stopIndex) {
