@@ -731,7 +731,7 @@ async function openSharedTrip(tripId, silent = false) {
   if (airportArrival?.fixedTime) state.days[0].startTime = airportArrival.fixedTime;
   cloudReady = true;
   lastKnownCloudUpdate = tripResult.data.updated_at || "";
-  lastKnownContentSignature = plannerData.contentSignature || sharedStateSignature();
+  lastKnownContentSignature = plannerData.contentSignature || contentHash();
   localStorage.setItem(storageKey(), JSON.stringify(state));
   els.startTime.value = state.startTime;
   updateDayUi();
@@ -851,7 +851,7 @@ async function saveToCloud() {
       manualArrivals: state.days.map((day) => day.legs.map((leg) => leg?.manualArrivalTime || "")),
       dayStartTimes: state.days.map((day) => day.startTime),
       dayCount: state.days.length,
-      contentSignature: sharedStateSignature(),
+      contentSignature: contentHash(),
     writerId: clientInstanceId,
   };
   lastKnownContentSignature = plannerData.contentSignature;
@@ -907,19 +907,62 @@ function isNewCloudVersion(updatedAt) {
 
 async function checkCloudVersion() {
   if (!cloudReady || cloudSavePending || cloudSaveInFlight || document.hidden) return;
-  const { data, error } = await supabase.from("namba_trips").select("updated_at,planner_data").eq("id", activeTripId).maybeSingle();
-  if (error || data?.planner_data?.writerId === clientInstanceId) return;
-  const remoteSignature = data?.planner_data?.contentSignature || "";
+  // 15초마다 도는 확인이라 수정 시각과 작성자만 받는다(약 100바이트).
+  // 수정 시각이 바뀌었을 때만 내용 해시를 받아 비교하고, 실제로 내용이 달라졌을 때만 전체를 다시 불러온다.
+  // (Supabase 월 5GB 한도: 예전에는 15초마다 여행 데이터 전체 약 30KB를 받았다)
+  const { data, error } = await supabase.from("namba_trips")
+    .select("updated_at,writerId:planner_data->>writerId")
+    .eq("id", activeTripId).maybeSingle();
+  if (error || data?.writerId === clientInstanceId) return;
+  if (!isNewCloudVersion(data?.updated_at)) return;
+  const sig = await supabase.from("namba_trips")
+    .select("updated_at,contentSignature:planner_data->>contentSignature")
+    .eq("id", activeTripId).maybeSingle();
+  if (sig.error) return;
+  const remoteSignature = sig.data?.contentSignature || "";
   if (remoteSignature && remoteSignature === lastKnownContentSignature) {
-    lastKnownCloudUpdate = data?.updated_at || lastKnownCloudUpdate;
+    lastKnownCloudUpdate = sig.data?.updated_at || lastKnownCloudUpdate;
     return;
   }
-  if (isNewCloudVersion(data?.updated_at)) scheduleRealtimeRefresh();
+  scheduleRealtimeRefresh();
 }
+
+// 공유 내용의 짧은 해시(16자). 예전에는 내용 전체를 직렬화한 긴 문자열(약 19KB)을 그대로 저장해서
+// 저장할 때마다 실시간 알림과 조회 크기가 커졌다. 비교는 같은지 여부만 보므로 해시로 충분하다.
+function contentHash() {
+  const text = sharedStateSignature();
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 2654435761);
+    h2 = Math.imul(h2 ^ c, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return "h1:" + (h2 >>> 0).toString(16).padStart(8, "0") + (h1 >>> 0).toString(16).padStart(8, "0");
+}
+
+// 화면이 가려진 동안(휴대폰 화면 꺼짐·다른 앱 사용) 일행의 변경이 와도 전체(약 250KB)를 매번 받지 않는다.
+// 다시 화면을 볼 때 한 번만 받는다. (Supabase 월 5GB 한도)
+let refreshWhenVisible = false;
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  if (refreshWhenVisible) {
+    refreshWhenVisible = false;
+    scheduleRealtimeRefresh();
+  } else {
+    // 가려진 사이 연결이 끊겨 알림을 놓쳤을 수 있으니, 돌아오면 수정 시각만 바로 확인한다(약 100바이트).
+    checkCloudVersion();
+  }
+});
 
 function scheduleRealtimeRefresh() {
   clearTimeout(realtimeRefreshTimer);
   realtimeRefreshTimer = setTimeout(async () => {
+    if (document.hidden) {
+      refreshWhenVisible = true;
+      return;
+    }
     if (cloudSavePending || cloudSaveInFlight) {
       scheduleRealtimeRefresh();
       return;
