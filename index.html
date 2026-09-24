@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>오사카 여행 &gt; 여행플래너</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="config.local.js"></script>
+    <script src="supabase.local.js"></script>
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <main class="app-shell list-mode">
+      <aside class="planner-panel">
+        <header class="brand-row">
+          <div>
+            <h1>여행플래너</h1>
+          </div>
+          <button id="tripSwitchButton" type="button" class="trip-switch-button">여행 전환</button>
+        </header>
+
+        <section class="cloud-row">
+          <div>
+            <strong id="cloudStatus">이 기기에 저장 중</strong>
+            <span id="cloudHint">공유 저장을 시작하면 일행과 함께 볼 수 있어요.</span>
+          </div>
+          <button id="cloudButton" class="secondary-button">공유 저장 시작</button>
+        </section>
+
+        <section id="setupNotice" class="setup-notice hidden">
+          <strong>Google Maps API 키가 필요합니다.</strong>
+          <span><code>config.local.js</code>에 발급받은 키를 입력한 뒤 새로고침하세요.</span>
+        </section>
+
+        <nav class="main-tabs" role="tablist" aria-label="여행 계획 보기">
+          <button id="listTabButton" class="main-tab active" role="tab" aria-selected="true">리스트</button>
+          <button id="routeTabButton" class="main-tab" role="tab" aria-selected="false">동선</button>
+          <button id="ledgerTabButton" class="main-tab" role="tab" aria-selected="false">가계부</button>
+        </nav>
+
+        <div id="listPanel" class="main-tab-panel">
+          <section class="search-section">
+            <label for="placeSearch">가고 싶은 장소</label>
+            <div id="searchHost" class="search-host">
+              <input id="placeSearch" type="search" placeholder="장소명 또는 주소 검색" autocomplete="off" />
+            </div>
+            <p class="search-hint">장소를 저장한 뒤 ♥를 누르면 동선 후보에 나타납니다.</p>
+            <div id="searchResults" class="search-results hidden"></div>
+          </section>
+
+          <section class="wishlist-section">
+            <div class="section-heading">
+              <div><span>갈 곳 리스트</span><small>음식 종류로 골라보고 마음에 드는 곳을 즐겨찾기하세요.</small></div>
+              <strong id="wishlistCount">0곳</strong>
+            </div>
+            <div id="categoryFilters" class="category-filters" aria-label="음식 종류 필터"></div>
+            <div id="wishlistViewFilters" class="wishlist-view-filters" aria-label="갈 곳 보기 및 정렬">
+              <button class="active" data-wishlist-view="DEFAULT">기본순</button>
+              <button data-wishlist-view="FAVORITES">♥ 즐겨찾기만</button>
+              <button data-wishlist-view="RATING">★ 평점순</button>
+              <button data-wishlist-view="TABELOG">타베로그 평점순</button>
+              <button data-wishlist-view="HOTEL_DISTANCE">⌂ 숙소 거리순</button>
+            </div>
+            <div id="wishlist" class="wishlist"></div>
+            <nav id="wishlistPagination" class="wishlist-pagination hidden" aria-label="갈 곳 리스트 페이지"></nav>
+          </section>
+        </div>
+
+        <div id="routePanel" class="main-tab-panel hidden">
+          <section class="day-controls">
+          <label>여행 시작 <input id="startTime" type="time" value="10:00" /></label>
+          <div class="route-actions">
+            <button id="favoriteCandidateButton" class="secondary-button candidate-launch-button">즐겨찾기 후보</button>
+            <button id="customScheduleButton" class="secondary-button">커스텀 일정 추가</button>
+            <button id="returnHotelButton" class="secondary-button">숙소 복귀 추가</button>
+            <button id="openGoogleRouteButton" class="secondary-button" type="button">구글맵으로 보기 ↗</button>
+          </div>
+          </section>
+
+          <nav class="day-slider" aria-label="여행 일차 선택">
+          <button id="previousDay" class="day-arrow" aria-label="이전 일차">‹</button>
+          <div id="dayTabs" class="day-tabs" role="tablist"></div>
+          <button id="addDayButton" class="day-add-button" type="button">+ 일차</button>
+          <button id="nextDay" class="day-arrow" aria-label="다음 일차">›</button>
+          </nav>
+
+          <section id="customScheduleSection" class="custom-schedule-section"></section>
+
+          <section id="itinerary" class="itinerary" aria-live="polite"></section>
+
+          <p class="route-disclaimer">도보 경로는 실제 보행로 상황과 다를 수 있으니 현지 표지와 Google Maps를 함께 확인하세요.</p>
+
+          <section class="map-visibility-section">
+            <div class="section-heading"><div><span>지도에서 숨기기</span><small>누른 장소와 연결 경로만 지도에서 제외됩니다.</small></div></div>
+            <div id="mapVisibilityControls" class="map-visibility-controls"></div>
+          </section>
+
+          <footer class="summary-card">
+          <div>
+            <span>오늘의 산책</span>
+            <strong id="totalSummary">총 0m · 도보 0분</strong>
+          </div>
+          </footer>
+        </div>
+
+        <span id="ledgerAnchor" hidden></span>
+        <div id="ledgerPanel" class="main-tab-panel hidden">
+          <section class="ledger-summary">
+            <div class="ledger-total-copy"><span id="ledgerTotalLabel">공통 총경비</span><strong id="ledgerTotal">¥0 · 약 ₩0</strong><small id="ledgerBudgetStatus">예산을 입력하면 잔액과 사용률이 표시됩니다.</small></div>
+            <div class="ledger-summary-actions"><button id="ledgerAmountToggle" class="secondary-button" type="button">1인당 보기</button><button id="expenseAddButton" class="primary-button">+ 지출 추가</button></div>
+          </section>
+          <p id="exchangeRateText" class="exchange-rate-text">환율 확인 중…</p>
+
+          <form id="expenseForm" class="expense-form hidden">
+            <select id="expenseDay" aria-label="지출 일차"></select>
+            <select id="expenseCategory" aria-label="지출 분류"><option>고정비</option><option>식비</option><option>편의점</option><option>기타</option></select>
+            <select id="expenseOwner" aria-label="지출자"><option>공통</option></select>
+            <input id="expenseTitle" required placeholder="사용 내용" />
+            <select id="expensePlace" aria-label="장소 선택"><option value="">장소 선택 안 함</option></select>
+            <select id="expenseCurrency" aria-label="입력 통화"><option value="JPY">엔화 ¥</option><option value="KRW">원화 ₩</option></select>
+            <label class="amount-field"><input id="expenseAmount" type="text" inputmode="numeric" data-formatted-number required placeholder="금액" /><span id="expenseCurrencyUnit">엔</span></label>
+            <label class="per-person-toggle"><input id="expensePerPerson" type="checkbox" /><span id="expensePerPersonLabel">인당 금액 × 5명</span></label>
+            <input id="expenseNote" placeholder="비고 (선택)" />
+            <div class="expense-form-actions"><button type="button" id="expenseCancelButton" class="secondary-button">취소</button><button type="submit" class="primary-button">저장</button></div>
+          </form>
+
+          <div class="ledger-day-row"><div id="dailyExpenseSummary" class="daily-expense-summary"></div></div>
+          <div id="categoryExpenseSummary" class="category-expense-summary"></div>
+          <div id="expenseList" class="expense-list"></div>
+
+          <section class="budget-section">
+            <div class="section-heading"><div><span>여행 예산 설정</span><small>금액은 원화 기준이며 비워두면 제한 없이 계산합니다.</small></div><strong id="unallocatedBudget"></strong></div>
+            <label class="budget-total-field"><span>전체 예산</span><input id="totalBudgetInput" type="text" inputmode="numeric" data-formatted-number placeholder="예: 3,500,000" /><b>원</b></label>
+            <div id="dayBudgetInputs" class="budget-input-grid"></div>
+            <div id="categoryBudgetInputs" class="budget-input-grid category-budgets"></div>
+          </section>
+        </div>
+      </aside>
+
+      <section class="map-panel">
+        <div id="map" class="map-canvas"></div>
+        <div id="mapPlaceholder" class="map-placeholder">
+          <div class="fake-city" aria-hidden="true"></div>
+          <div class="placeholder-copy">
+            <span class="map-pin">⌂</span>
+            <h2>난바 주변 동선 지도</h2>
+            <p>API 키를 연결하면 실제 Google 지도가 표시됩니다.</p>
+          </div>
+        </div>
+        <div class="radius-badge">숙소 중심 · 약 3km</div>
+        <div id="mapStatus" class="map-status">지도 준비 중</div>
+        <span id="rankingAnchor" hidden></span>
+        <section id="rankingPanel" class="ranking-panel hidden" aria-label="개인별 지출 순위">
+          <p class="eyebrow">SPENDING RANKING</p>
+          <div class="ranking-title-row"><h2>누가 가장 많이 썼을까?</h2><button id="participantAddButton" type="button">+ 여행자</button></div>
+          <p>공통 지출을 제외한 개인별 결제 금액입니다. 이름을 누르면 해당 사람의 지출을 바로 추가할 수 있어요.</p>
+          <div id="rankingList" class="ranking-list"></div>
+          <div id="rankingDetails" class="ranking-details hidden"></div>
+        </section>
+      </section>
+    </main>
+
+    <div id="syncToast" class="sync-toast" role="status" aria-live="polite">일행의 변경 내용이 반영됐습니다.</div>
+
+    <dialog id="placeDialog" class="place-dialog">
+      <button id="closeDialog" class="dialog-close" aria-label="닫기">×</button>
+      <p class="eyebrow">SELECTED PLACE</p>
+      <h2 id="dialogName"></h2>
+      <p id="dialogAddress" class="dialog-address"></p>
+      <div class="dialog-actions">
+        <button id="saveCandidateButton" class="secondary-button">갈 곳 리스트에 저장</button>
+        <button id="addPlaceButton" class="primary-button">현재 일차에 바로 추가</button>
+        <a id="googleSearchLink" class="secondary-button" target="_blank" rel="noopener">Google 지도에서 보기 ↗</a>
+      </div>
+    </dialog>
+
+    <dialog id="candidateDialog" class="candidate-dialog">
+      <button id="closeCandidateDialog" class="dialog-close" aria-label="닫기">×</button>
+      <div id="stopEditTabs" class="stop-edit-tabs hidden" role="tablist" aria-label="수정 종류">
+        <button type="button" class="active" data-stop-edit-tab="PLACE" role="tab">장소 변경</button>
+        <button type="button" data-stop-edit-tab="MOVE" role="tab">일자 변경</button>
+      </div>
+      <div class="section-heading">
+        <div><span id="candidateDialogTitle">즐겨찾기 후보</span><small id="candidateDialogHint">순서만 선택하면 현재 보고 있는 일차에 추가됩니다.</small></div>
+        <strong id="favoriteCount">0곳</strong>
+      </div>
+      <div id="routeCandidateFilters" class="route-candidate-filters" aria-label="즐겨찾기 후보 종류 필터"></div>
+      <div id="candidateViewFilters" class="wishlist-view-filters candidate-view-filters" aria-label="즐겨찾기 후보 정렬">
+        <button class="active" data-candidate-view="DEFAULT">기본순</button>
+        <button data-candidate-view="FAVORITES">♥ 즐겨찾기만</button>
+        <button data-candidate-view="RATING">★ 평점순</button>
+        <button data-candidate-view="TABELOG">타베로그 평점순</button>
+        <button data-candidate-view="HOTEL_DISTANCE">⌂ 숙소 거리순</button>
+      </div>
+      <div id="routeCandidates" class="route-candidates"></div>
+    </dialog>
+
+    <dialog id="moveStopDialog" class="place-dialog move-stop-dialog">
+      <button id="closeMoveStopDialog" class="dialog-close" aria-label="닫기">×</button>
+      <div id="moveStopEditTabs" class="stop-edit-tabs" role="tablist" aria-label="수정 종류">
+        <button type="button" data-move-stop-edit-tab="PLACE" role="tab">장소 변경</button>
+        <button type="button" class="active" data-move-stop-edit-tab="MOVE" role="tab">일자 변경</button>
+      </div>
+      <p class="eyebrow">일정 이동</p>
+      <h2 id="moveStopName">장소 이동</h2>
+      <form id="moveStopForm">
+        <label><span>이동할 일차</span><select id="moveStopDay"></select></label>
+        <label><span>이동할 순서</span><select id="moveStopOrder"></select></label>
+        <div class="dialog-actions"><button type="button" id="cancelMoveStop" class="secondary-button">취소</button><button type="submit" class="primary-button">이동하기</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="hotelDialog" class="place-dialog hotel-dialog">
+      <button id="closeHotelDialog" class="dialog-close" aria-label="닫기">×</button>
+      <p class="eyebrow">숙소 지정</p>
+      <h2>복귀할 숙소를 선택하세요</h2>
+      <p class="dialog-address">선택한 장소는 여행의 기준 숙소로 저장되며 즐겨찾기 거리 계산에도 사용됩니다.</p>
+      <form id="hotelForm">
+        <label><span>숙소</span><select id="hotelSelect" required></select></label>
+        <div class="dialog-actions"><button type="button" id="cancelHotelDialog" class="secondary-button">취소</button><button type="submit" class="primary-button">지정하고 복귀 추가</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="tripDialog" class="place-dialog trip-dialog">
+      <button id="closeTripDialog" class="dialog-close" aria-label="닫기">×</button>
+      <p class="eyebrow">여행 관리</p>
+      <h2>여행 전환</h2>
+      <p class="dialog-address">참여 중인 여행으로 이동하거나 새로운 백지 여행을 만들 수 있습니다.</p>
+      <div id="tripList" class="trip-list"><span>여행 목록을 불러오는 중…</span></div>
+      <details class="trip-create-panel">
+        <summary>+ 새 여행 만들기</summary>
+        <form id="newTripForm">
+          <label><span>여행 이름</span><input id="newTripName" required maxlength="30" placeholder="예: 도쿄 여행" /></label>
+          <label><span>숫자 4자리 PIN</span><input id="newTripPin" required type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" placeholder="0000" /></label>
+          <button type="submit" class="primary-button">백지 여행 만들기</button>
+        </form>
+      </details>
+      <details class="trip-join-panel">
+        <summary>다른 여행 참여</summary>
+        <form id="joinTripForm">
+          <label><span>공유받은 여행 링크</span><input id="joinTripLink" required inputmode="url" placeholder="여행 링크 붙여넣기" /></label>
+          <button type="submit" class="secondary-button">링크 열기</button>
+        </form>
+      </details>
+    </dialog>
+  </body>
+</html>
