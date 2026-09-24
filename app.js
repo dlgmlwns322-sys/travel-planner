@@ -13,6 +13,10 @@ const state = loadState();
 attachActiveDayAccessors(state);
 migrateLegacyCustomItems();
 let mapsReady = false;
+// 마지막으로 받은 일정 목록(namba_trip_stops)과 그 버전({tripId, version}, 서버 발급).
+// 일행이 가계부만 고쳤을 때처럼 버전이 같으면 약 240KB 목록을 다시 받지 않는다. (Supabase 월 5GB 한도)
+let cachedStopsRows = null;
+let cachedStopsKey = null;
 let map2d;
 let map2dOverlays = [];
 let mapDrawVersion = 0;
@@ -633,9 +637,16 @@ async function openSharedTrip(tripId, silent = false) {
       }
     });
   });
-  let tripResult = await supabase.from("namba_trips").select("id,name,start_time,updated_at,planner_data").eq("id", tripId).maybeSingle();
-  if (tripResult.error) throw tripResult.error;
-  if (!tripResult.data) {
+  // 여행·일정 목록 버전·일정 목록을 한 번에(같은 시점) 받는다. 이미 가진 버전과 같으면 목록(약 240KB)은 빠져서 온다.
+  // 버전은 서버가 일정이 실제로 바뀔 때만 올리므로, 예전 사이트에서 저장한 경우도 정확히 반영된다. (Supabase 월 5GB 한도)
+  // 요청을 시작할 때의 캐시를 따로 잡아 둔다. 기다리는 사이 다른 여행을 열어 전역 캐시가 바뀌어도 섞이지 않게 한다.
+  const cacheSnapshot = cachedStopsKey && cachedStopsKey.tripId === tripId && cachedStopsRows
+    ? { version: cachedStopsKey.version, rows: cachedStopsRows } : null;
+  const knownVersion = cacheSnapshot ? cacheSnapshot.version : null;
+  const loadTrip = (version) => supabase.rpc("namba_load_trip", { p_trip_id: tripId, p_known_stops_version: version });
+  let loaded = await loadTrip(knownVersion);
+  if (loaded.error) throw loaded.error;
+  if (!loaded.data) {
     const pin = prompt("이 여행의 참여 PIN을 입력하세요.");
     if (!pin) {
       setCloudUi("참여 PIN 필요", "공유 링크를 보낸 사람에게 PIN을 확인하세요.", "PIN 입력");
@@ -647,14 +658,29 @@ async function openSharedTrip(tripId, silent = false) {
       setCloudUi("PIN이 맞지 않습니다", "다시 확인해 주세요.", "PIN 다시 입력");
       return;
     }
-    tripResult = await supabase.from("namba_trips").select("id,name,start_time,updated_at,planner_data").eq("id", tripId).single();
-    if (tripResult.error) throw tripResult.error;
+    loaded = await loadTrip(null);
+    if (loaded.error) throw loaded.error;
+    if (!loaded.data) throw new Error("여행을 찾을 수 없습니다.");
   }
-
-  const stopsResult = await supabase.from("namba_trip_stops")
-    .select("place_id,name,address,latitude,longitude,stay_minutes,sort_order,is_hotel,is_fixed,fixed_role,fixed_time,planner_meta")
-    .eq("trip_id", tripId).order("sort_order");
-  if (stopsResult.error) throw stopsResult.error;
+  let stopsRows = loaded.data.stops;
+  if (stopsRows == null) {
+    if (cacheSnapshot && cacheSnapshot.version === loaded.data.stops_version) {
+      // 일정 목록이 그대로면 저장해 둔 목록을 쓴다(화면에서 고쳐도 원본이 안 바뀌게 복사본).
+      stopsRows = structuredClone(cacheSnapshot.rows);
+    } else {
+      loaded = await loadTrip(null);
+      if (loaded.error) throw loaded.error;
+      if (!loaded.data) throw new Error("여행을 찾을 수 없습니다.");
+      stopsRows = loaded.data.stops || [];
+    }
+  }
+  // 응답이 요청한 여행 것일 때만 캐시에 넣는다.
+  if (loaded.data.id === tripId) {
+    cachedStopsRows = structuredClone(stopsRows);
+    cachedStopsKey = { tripId, version: loaded.data.stops_version };
+  }
+  const tripResult = { data: loaded.data };
+  const stopsResult = { data: stopsRows };
   const plannerData = tripResult.data.planner_data || {};
   const savedScheduleDays = (stopsResult.data || []).filter((stop) => stop.planner_meta?.isWishlist !== true && (stop.planner_meta?.dayIndex !== undefined || Number(stop.sort_order) < 9000)).map((stop) => Number.isInteger(Number(stop.planner_meta?.dayIndex)) ? Number(stop.planner_meta.dayIndex) : Math.floor((Number(stop.sort_order) || 0) / 1000));
   const storedDayCount = Math.max(1, Number(plannerData.dayCount) || 0, Array.isArray(plannerData.dayStartTimes) ? plannerData.dayStartTimes.length : 0, savedScheduleDays.length ? Math.max(...savedScheduleDays) + 1 : 0);
@@ -930,7 +956,10 @@ async function checkCloudVersion() {
 // 공유 내용의 짧은 해시(16자). 예전에는 내용 전체를 직렬화한 긴 문자열(약 19KB)을 그대로 저장해서
 // 저장할 때마다 실시간 알림과 조회 크기가 커졌다. 비교는 같은지 여부만 보므로 해시로 충분하다.
 function contentHash() {
-  const text = sharedStateSignature();
+  return hashText(sharedStateSignature());
+}
+
+function hashText(text) {
   let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
   for (let i = 0; i < text.length; i++) {
     const c = text.charCodeAt(i);
